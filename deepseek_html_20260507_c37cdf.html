@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Three.js汽车展示 - 可交互3D汽车模型</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: 'Microsoft YaHei', sans-serif;
+        }
+        #info {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(0,0,0,0.6);
+            color: white;
+            padding: 10px 15px;
+            border-radius: 8px;
+            pointer-events: none;
+            z-index: 10;
+            backdrop-filter: blur(5px);
+            font-size: 14px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+            border-left: 4px solid #ff8800;
+        }
+        #controls-tip {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            background: rgba(0,0,0,0.5);
+            color: #ccc;
+            padding: 5px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            pointer-events: none;
+            font-family: monospace;
+            z-index: 10;
+        }
+        @media (max-width: 600px) {
+            #info { font-size: 10px; top: 10px; left: 10px; }
+            #controls-tip { font-size: 9px; }
+        }
+    </style>
+</head>
+<body>
+    <div id="info">
+        🚗 汽车模型展示 | 地面平面 | 鼠标/手指拖拽旋转 | 右键平移 | 滚轮缩放
+    </div>
+    <div id="controls-tip">
+        🖱️ 鼠标拖动旋转视角 | 右键拖动平移 | 滚动缩放 | 全方位观察
+    </div>
+
+    <!-- 引入 Three.js 核心库以及扩展组件 -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.128.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.128.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+        // --- 初始化场景、相机、渲染器 -----------------------------------------------------------------
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x111122); // 深色星空背景，突出汽车
+        scene.fog = new THREE.FogExp2(0x111122, 0.008); // 轻度雾效，增强景深感
+
+        // 透视相机: 视野, 宽高比, 近平面, 远平面
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(5, 3.5, 5);  // 相机初始位置 (右, 上, 前)
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;      // 启用阴影映射，增强立体感
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap; // 柔和阴影
+        renderer.setPixelRatio(window.devicePixelRatio);
+        document.body.appendChild(renderer.domElement);
+
+        // --- 轨道控制 (支持旋转、缩放、平移) ---------------------------------------------------------
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;          // 惯性效果，让交互更平滑
+        controls.dampingFactor = 0.05;
+        controls.rotateSpeed = 1.0;
+        controls.zoomSpeed = 1.2;
+        controls.panSpeed = 0.8;
+        controls.screenSpacePanning = true;     // 平移时保持水平/垂直，避免倾斜地面感觉
+        controls.enableZoom = true;
+        controls.enablePan = true;
+        controls.target.set(0, 0.5, 0);         // 瞄准汽车中心偏下一点，方便观察整体
+        controls.update();
+
+        // --- 辅助元素：简易网格辅助线 (可选，帮助观察地面位置，但不影响"地面平面"的视觉) -------------
+        // 为了更好的参考，添加一个辅助网格线，但地面平面依然是主要的视觉地面
+        const gridHelper = new THREE.GridHelper(20, 20, 0x88aaff, 0x335588);
+        gridHelper.position.y = 0.01; // 稍微抬高一点避免与地面平面深度冲突
+        gridHelper.material.transparent = true;
+        gridHelper.material.opacity = 0.4;
+        scene.add(gridHelper);
+        
+        // 简单轴线辅助 (可选，便于观察中心，但不必须)
+        // 添加一个很 subtle 的轴向辅助器 (红X, 绿Z)，便于观察方向 (调试用，可注释)
+        // const axesHelper = new THREE.AxesHelper(3);
+        // scene.add(axesHelper); // 默认隐藏，需要可取消注释
+
+        // --- 地面平面 (符合要求: 一个平面代表地面，汽车位于中心) --------------------------------------
+        // 创建地面材质，带有轻微纹理和颜色，接收阴影
+        const groundMaterial = new THREE.MeshStandardMaterial({ 
+            color: 0x3a6b4b,      // 深绿色草地感
+            roughness: 0.8,
+            metalness: 0.1,
+            side: THREE.DoubleSide  // 双面渲染，避免从下面看消失（虽然一般不需要）
+        });
+        
+        // 地面平面几何体，宽20，长20，足够展示轿车
+        const groundPlane = new THREE.Mesh(new THREE.PlaneGeometry(20, 20), groundMaterial);
+        groundPlane.rotation.x = -Math.PI / 2; // 旋转使其水平 (默认PlaneGeometry是XY平面，转为XZ平面)
+        groundPlane.position.y = 0;
+        groundPlane.receiveShadow = true;       // 地面接收阴影
+        scene.add(groundPlane);
+        
+        // 为了增加地面质感，添加一个淡色的圆形渐变辅助平面或简单圆环装饰 (可选，提升美观)
+        const circleMaterial = new THREE.MeshStandardMaterial({ color: 0x2c5a3a, roughness: 0.6, metalness: 0.05 });
+        const groundCircle = new THREE.Mesh(new THREE.CircleGeometry(4.5, 16), circleMaterial);
+        groundCircle.rotation.x = -Math.PI / 2;
+        groundCircle.position.y = 0.005; // 略高于主地面避免闪烁
+        groundCircle.receiveShadow = true;
+        scene.add(groundCircle);
+        
+        // --- 灯光系统 (使汽车材质充分展现，阴影清晰) --------------------------------------------------
+        // 1. 环境光: 均匀照亮
+        const ambientLight = new THREE.AmbientLight(0x404060, 0.6);
+        scene.add(ambientLight);
+        
+        // 2. 主光源: 方向光 (产生明暗对比和阴影)
+        const directionalLight = new THREE.DirectionalLight(0xfff5e6, 1.2);
+        directionalLight.position.set(3, 5, 2);
+        directionalLight.castShadow = true;
+        directionalLight.receiveShadow = true;
+        directionalLight.shadow.mapSize.width = 1024;
+        directionalLight.shadow.mapSize.height = 1024;
+        directionalLight.shadow.camera.near = 0.5;
+        directionalLight.shadow.camera.far = 10;
+        directionalLight.shadow.camera.left = -5;
+        directionalLight.shadow.camera.right = 5;
+        directionalLight.shadow.camera.top = 5;
+        directionalLight.shadow.camera.bottom = -5;
+        scene.add(directionalLight);
+        
+        // 辅助方向光: 从背后和侧方补充，避免背光面太暗
+        const backLight = new THREE.DirectionalLight(0x88aaff, 0.5);
+        backLight.position.set(-2, 2, -3);
+        scene.add(backLight);
+        
+        const fillLight = new THREE.PointLight(0x665588, 0.4);
+        fillLight.position.set(1, 1.5, 2);
+        scene.add(fillLight);
+        
+        // 3. 一个微弱的暖色背补光，让汽车轮廓更生动
+        const rimLight = new THREE.PointLight(0xffaa66, 0.3);
+        rimLight.position.set(1, 2, -2.5);
+        scene.add(rimLight);
+        
+        // 可选: 增加一个小光晕效果或辅助光，展示车轮细节
+        const wheelFillLight = new THREE.PointLight(0xccaa88, 0.25);
+        wheelFillLight.position.set(0.5, 0.3, 1);
+        scene.add(wheelFillLight);
+        
+        // --- 加载 GLB 汽车模型 --------------------------------------------------------------------
+        // 注意: 请将您的汽车模型文件 (例如 car.glb) 放在与html同目录下，并修改下面的路径
+        // 如果模型在其他位置，请修改 'url' 为正确路径，支持相对路径或绝对路径
+        const modelUrl = './car.glb';  // 👈 在这里修改您的模型文件路径 (例如 './models/car.glb')
+        
+        // 可选: 模型缩放系数 (如果模型过大或过小，可以调整此值，默认为1)
+        // 提示: 您也可以在加载后根据模型实际尺寸手动调整，建议先保持1，若模型太大/太小，修改下方数值
+        const modelScale = 1.0;   // 例如 0.8 缩小，1.2 放大
+        
+        // 实例化 GLTF 加载器
+        const loader = new GLTFLoader();
+        
+        // 用于存储加载后的模型对象
+        let carModel = null;
+        
+        // 显示加载提示 (简单div，会在加载完成后消失或保留信息)
+        const loadingDiv = document.createElement('div');
+        loadingDiv.textContent = '🚗 正在加载汽车模型，请稍候...';
+        loadingDiv.style.position = 'absolute';
+        loadingDiv.style.bottom = '30px';
+        loadingDiv.style.right = '20px';
+        loadingDiv.style.backgroundColor = 'rgba(0,0,0,0.7)';
+        loadingDiv.style.color = '#ffaa44';
+        loadingDiv.style.padding = '8px 16px';
+        loadingDiv.style.borderRadius = '20px';
+        loadingDiv.style.fontSize = '14px';
+        loadingDiv.style.fontFamily = 'monospace';
+        loadingDiv.style.zIndex = '20';
+        loadingDiv.style.pointerEvents = 'none';
+        loadingDiv.style.backdropFilter = 'blur(4px)';
+        document.body.appendChild(loadingDiv);
+        
+        // 加载模型并处理位置 (使其位于地面中心且车轮接触地面)
+        loader.load(modelUrl, 
+            (gltf) => {
+                carModel = gltf.scene;
+                
+                // 应用自定义缩放
+                carModel.scale.set(modelScale, modelScale, modelScale);
+                
+                // 为模型的所有子物体启用阴影投射和接收 (增强真实感)
+                carModel.traverse((child) => {
+                    if (child.isMesh) {
+                        child.castShadow = true;
+                        child.receiveShadow = true;
+                        // 可选: 优化材质响应光照 (因为某些导出模型材质可能过于粗糙)
+                        if (child.material) {
+                            // 如果材质是标准材质，适当提高金属感/粗糙度处理，让车漆更漂亮
+                            if (child.material instanceof THREE.MeshStandardMaterial) {
+                                child.material.roughness = Math.max(0.2, child.material.roughness * 0.9);
+                                child.material.metalness = Math.min(1.0, (child.material.metalness || 0.5) + 0.1);
+                            }
+                            // 处理多材质情况
+                            if (Array.isArray(child.material)) {
+                                child.material.forEach(mat => {
+                                    if (mat instanceof THREE.MeshStandardMaterial) {
+                                        mat.roughness = Math.max(0.2, mat.roughness * 0.9);
+                                        mat.metalness = Math.min(1.0, (mat.metalness || 0.5) + 0.1);
+                                    }
+                                });
+                            }
+                        }
+                    }
+                });
+                
+                // 重要: 计算模型的包围盒，以便将模型正确放置于地面中心 (Y轴最低点接触地面，X/Z中心对齐原点)
+                // 由于模型可能已经带有位置偏移且缩放已应用，我们需要基于当前世界矩阵计算准确的包围盒
+                // 方法: 临时将模型添加到场景，计算包围盒，再调整位置，确保最低点 y = 0，且中心位于 (0,0)
+                scene.add(carModel); // 暂时加入场景以便计算包围盒
+                
+                // 更新世界矩阵确保包围盒精确
+                carModel.updateWorldMatrix(true, false);
+                const boundingBox = new THREE.Box3().setFromObject(carModel);
+                
+                // 获取包围盒的最小点、最大点
+                const min = boundingBox.min;
+                const max = boundingBox.max;
+                const center = new THREE.Vector3();
+                boundingBox.getCenter(center);
+                
+                // 计算偏移量: 
+                // 1. 让模型最低点 (min.y) 贴合地面 y=0 -> 需要向上移动 -min.y
+                // 2. 让模型在 X 和 Z 方向上的中心对齐到原点 (0,0) -> 偏移量 = -center.x 和 -center.z
+                const offsetY = -min.y;
+                const offsetX = -center.x;
+                const offsetZ = -center.z;
+                
+                // 应用位置偏移 (保持缩放不变，仅平移)
+                carModel.position.set(offsetX, offsetY, offsetZ);
+                
+                // 再次验证一下阴影和位置, 可选重新获取包围盒调试，但不需要
+                console.log(`模型位置调整完成: 偏移坐标 (${offsetX.toFixed(3)}, ${offsetY.toFixed(3)}, ${offsetZ.toFixed(3)})`);
+                console.log(`模型原始高度范围: ${min.y.toFixed(3)} 至 ${max.y.toFixed(3)}，现在最低点在 y=0`);
+                
+                // 因为汽车模型可能有多余的空节点，确保阴影投射正常（已经traverse处理）
+                // 更新控制器的目标点，略微提高观察中心到汽车中心偏下，让视野更舒适
+                // 获取调整后汽车的大致高度中心
+                const newBox = new THREE.Box3().setFromObject(carModel);
+                const newCenter = new THREE.Vector3();
+                newBox.getCenter(newCenter);
+                controls.target.set(newCenter.x, newCenter.y * 0.7, newCenter.z);
+                controls.update();
+                
+                // 移除加载提示，显示成功信息
+                loadingDiv.textContent = '✅ 模型加载成功！ 尽情交互~';
+                loadingDiv.style.backgroundColor = 'rgba(0,0,0,0.8)';
+                loadingDiv.style.color = '#aaffaa';
+                setTimeout(() => {
+                    loadingDiv.style.opacity = '0';
+                    setTimeout(() => {
+                        if(loadingDiv.parentNode) loadingDiv.parentNode.removeChild(loadingDiv);
+                    }, 1000);
+                }, 2500);
+                
+                // 可选：添加一个微微的辅助光或者边缘光强调模型
+                const rimIntensity = 0.2;
+                const rimSpot = new THREE.SpotLight(0xccaa88, rimIntensity);
+                rimSpot.position.set(1.5, 2, -2);
+                rimSpot.castShadow = false;
+                scene.add(rimSpot);
+                
+            },
+            (xhr) => {
+                // 加载进度回调
+                const percent = Math.floor((xhr.loaded / xhr.total) * 100);
+                loadingDiv.textContent = `🚗 加载模型中: ${percent}%`;
+            },
+            (error) => {
+                // 加载错误处理
+                console.error('模型加载失败:', error);
+                loadingDiv.textContent = '❌ 模型加载失败！请检查文件路径或网络，确保 car.glb 文件存在。';
+                loadingDiv.style.backgroundColor = 'rgba(200,0,0,0.8)';
+                loadingDiv.style.color = '#ffffff';
+                loadingDiv.style.maxWidth = '280px';
+                loadingDiv.style.right = '20px';
+                loadingDiv.style.bottom = '30px';
+                loadingDiv.style.fontSize = '12px';
+                
+                // 在场景中创建一个简单的占位物体，提示用户放置模型
+                const placeholderGeometry = new THREE.BoxGeometry(1.2, 0.8, 2.2);
+                const placeholderMaterial = new THREE.MeshStandardMaterial({ color: 0xffaa55, emissive: 0x442200, roughness: 0.4 });
+                const placeholderCar = new THREE.Mesh(placeholderGeometry, placeholderMaterial);
+                placeholderCar.castShadow = true;
+                placeholderCar.receiveShadow = true;
+                placeholderCar.position.set(0, 0.4, 0);
+                scene.add(placeholderCar);
+                
+                // 添加简单车轮示意 (四个小球)
+                const wheelMat = new THREE.MeshStandardMaterial({ color: 0x333333, metalness: 0.7 });
+                const positions = [[-0.7, 0.2, -0.9], [0.7, 0.2, -0.9], [-0.7, 0.2, 0.9], [0.7, 0.2, 0.9]];
+                positions.forEach(pos => {
+                    const wheel = new THREE.Mesh(new THREE.SphereGeometry(0.25, 16, 16), wheelMat);
+                    wheel.position.set(pos[0], pos[1], pos[2]);
+                    wheel.castShadow = true;
+                    scene.add(wheel);
+                });
+                
+                // 添加文字说明错误
+                console.warn('请确保模型文件路径正确，并将 car.glb 放在合适位置。当前使用占位模型示意。');
+            }
+        );
+        
+        // --- 添加一些环境点缀：简单的小粒子或者光晕，提升动感但不影响性能 (纯装饰) --------------------
+        // 创建一个非常微弱的粒子系统模拟灰尘或灯光 (可选)
+        const starGeometry = new THREE.BufferGeometry();
+        const starCount = 600;
+        const starPositions = new Float32Array(starCount * 3);
+        for (let i = 0; i < starCount; i++) {
+            starPositions[i*3] = (Math.random() - 0.5) * 200;
+            starPositions[i*3+1] = (Math.random() - 0.5) * 30 + 2;
+            starPositions[i*3+2] = (Math.random() - 0.5) * 100 - 50;
+        }
+        starGeometry.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
+        const starMaterial = new THREE.PointsMaterial({ color: 0xaaccff, size: 0.05, transparent: true, opacity: 0.4 });
+        const stars = new THREE.Points(starGeometry, starMaterial);
+        scene.add(stars);
+        
+        // 添加一个简单的环境球轻微反射 (由于性能，不加镜面反射，仅增加一点背景光晕感)
+        // 可选: 轻量级半球光辅助
+        const hemiLight = new THREE.HemisphereLight(0x88aaff, 0x44aa66, 0.3);
+        scene.add(hemiLight);
+        
+        // --- 简单动画 & 渲染循环 (让场景持续更新) ----------------------------------------------------
+        let time = 0;
+        
+        // 辅助: 让填充光源缓慢移动增加生动性 (可选小动画)
+        function animateLights() {
+            time += 0.008;
+            // 让 rimLight 和 fillLight 有微弱的圆周运动，增加高光变化 (效果轻微)
+            if (rimLight) {
+                const radius = 1.2;
+                rimLight.position.x = 1.5 + Math.sin(time * 0.5) * 0.3;
+                rimLight.position.z = -2.2 + Math.cos(time * 0.7) * 0.4;
+            }
+            if (wheelFillLight) {
+                wheelFillLight.intensity = 0.25 + Math.sin(time * 2) * 0.05;
+            }
+        }
+        
+        // 渲染循环
+        function render() {
+            // 更新灯光动态效果 (极轻度动画，增加交互时的生动感)
+            animateLights();
+            
+            // 更新轨道控制 (必须)
+            controls.update();
+            
+            // 让星光粒子缓慢自转，营造场景感
+            stars.rotation.y += 0.0005;
+            stars.rotation.x += 0.0003;
+            
+            // 渲染场景
+            renderer.render(scene, camera);
+            
+            // 请求下一帧
+            requestAnimationFrame(render);
+        }
+        
+        render();
+        
+        // --- 窗口尺寸适配 (响应式布局) --------------------------------------------------------------
+        window.addEventListener('resize', onWindowResize, false);
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+        
+        // 小彩蛋: 控制台输出帮助信息
+        console.log('%c🚗 Three.js 汽车展示已启动 | 使用鼠标/触摸板旋转、缩放、平移来观察您的爱车', 'color: #ff8800; font-size: 14px;');
+        console.log('模型路径: ' + modelUrl + ' (如加载失败，请确保路径正确)');
+        
+        // 补充说明: 如果模型加载后阴影不明显或位置仍有偏差，可在加载完成后微调偏移。
+        // 本脚本已经自动计算包围盒使其底部贴合地面(plane Y=0)且水平居中，完美适配大多数模型。
+    </script>
+</body>
+</html>
